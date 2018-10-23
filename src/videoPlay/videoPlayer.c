@@ -24,6 +24,49 @@ typedef enum status_e {
     STATUS_TRUE
 }status_e;
 
+typedef enum pthread_status_e {
+    PTHREAD_STATUS_STOP,
+    PTHREAD_STATUS_START,
+    PTHREAD_STATUS_EXIT
+}pthread_status_e;
+
+typedef enum SDL2_EVENT_e {
+    SDL2_EVENT_REFREASH = SDL_USEREVENT+1,
+    SDL2_EVENT_EXITFREASH = SDL2_EVENT_REFREASH + 1
+}SDL2_EVENT_e;
+
+typedef struct videoPlayerManager_s{
+    pthread_status_e mPthreadStatus;
+}videoPlayerManager_s;
+
+static videoPlayerManager_s gManager = {0};
+
+static void show_YUVData(const AVFrame * pYUVdata)
+{
+    printf("data->[0]:%x, [1]:%x, [2]:%x...", pYUVdata->data[0], pYUVdata->data[1], pYUVdata->data[2]);
+    printf("line->[0]:%x, [1]:%x, [2]:%x...\n", pYUVdata->linesize[0], pYUVdata->linesize[1], pYUVdata->linesize[2]);
+}
+
+static void SDL2_EventTask(void * param)
+{
+    SDL_Event eventMsg;
+    printf("[%s][%d]! start...\n", __func__, __LINE__);
+    while(gManager.mPthreadStatus != PTHREAD_STATUS_EXIT)
+    {
+        if(gManager.mPthreadStatus == PTHREAD_STATUS_START)
+        {
+            eventMsg.type = SDL2_EVENT_REFREASH;
+            SDL_PushEvent(&eventMsg);
+            SDL_Delay(40);
+        }
+    }
+
+    eventMsg.type = SDL2_EVENT_EXITFREASH;
+    SDL_PushEvent(&eventMsg);
+
+    return;
+}
+
 static void SDL2_ReSource_deinit(void)
 {
     SDL_Quit();
@@ -31,7 +74,7 @@ static void SDL2_ReSource_deinit(void)
     return;
 }
 
-static status_e SDL2_ReSource_init(const SDL_Rect * pSDLRect, SDL_Window ** pSDLWindow, SDL_Renderer ** pSDLRender, SDL_Texture ** pSDLTexture)
+static status_e SDL2_ReSource_init(const SDL_Rect * pSDLRect, SDL_Window ** pSDLWindow, SDL_Renderer ** pSDLRender, SDL_Texture ** pSDLTexture, SDL_Thread ** pSDLThread)
 {
     if(!pSDLRect || pSDLWindow == NULL || pSDLRender == NULL || pSDLTexture == NULL)
     {
@@ -42,13 +85,12 @@ static status_e SDL2_ReSource_init(const SDL_Rect * pSDLRect, SDL_Window ** pSDL
     SDL_Window * pSDLWindowt = NULL;
     SDL_Renderer * pSDLRendert = NULL;
     SDL_Texture * pSDLTexturet = NULL;
-
+    SDL_Thread  * pSDLThreadt = NULL;
     if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER))
     {
         printf("[%s][%d]! SDL_Init failed\n", __func__, __LINE__);
         return STATUS_FALSE;
     }
-
 
 
     pSDLWindowt = SDL_CreateWindow("this is sample video player", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
@@ -73,9 +115,13 @@ static status_e SDL2_ReSource_init(const SDL_Rect * pSDLRect, SDL_Window ** pSDL
         return STATUS_FALSE;
     }
 
+    gManager.mPthreadStatus = PTHREAD_STATUS_START;
+    pSDLThreadt = SDL_CreateThread(SDL2_EventTask, NULL, NULL);
+
     *pSDLWindow = pSDLWindowt;
     *pSDLRender = pSDLRendert;
     *pSDLTexture = pSDLTexturet;
+    *pSDLThread = pSDLThreadt;
 
     return STATUS_TRUE;
 }
@@ -99,8 +145,10 @@ status_e player_main(int argc, char * argv[])
     SDL_Window *   pSDLWindow = NULL;
     SDL_Renderer * pSDLRender = NULL;
     SDL_Texture *  pSDLTexture = NULL;
+    SDL_Thread  *  pEventTask = NULL;
+    SDL_Event mEvent = {0};
 
-    char * uri = "../../ts/RecordedTs_7.ts";
+    char * uri = "../../../av/test.avi";
 
     //1. init ffmpeg, register & net init
     av_register_all();//register all encodc,decodc,demux,mux,parse
@@ -209,37 +257,97 @@ status_e player_main(int argc, char * argv[])
     SDLRect.w = pAVCodeCt->width;
     SDLRect.h = pAVCodeCt->height;
 
-    if(SDL2_ReSource_init(&SDLRect, &pSDLWindow, &pSDLRender, &pSDLTexture) == STATUS_FALSE)
+    if(SDL2_ReSource_init(&SDLRect, &pSDLWindow, &pSDLRender, &pSDLTexture, &pEventTask) == STATUS_FALSE)
     {
         goto exit_1;
     }
 
-    while(av_read_frame(pAVFormatCt, pAVPacket) >= 0)
+    while(1)
     {
-        if(pAVPacket->stream_index == videoFirstIndex)
+        SDL_WaitEvent(&mEvent);
+        //printf("[%s][%d]! mEvent.type:%x\n", __func__, __LINE__, mEvent.type);
+        switch(mEvent.type)
         {
-            i32Ret = avcodec_decode_video2(pAVCodeCt, pAVframe, &got_picture, pAVPacket);
-            if(i32Ret < 0)
-            {
-                goto exit_1;
-            }
+            case SDL2_EVENT_REFREASH:
+                while(1)
+                {
+                    if(av_read_frame(pAVFormatCt, pAVPacket) < 0)
+                    {
+                        gManager.mPthreadStatus = PTHREAD_STATUS_EXIT;
+                        break;
+                    }
 
-            if(got_picture)
-            {
-                sws_scale(pSwsCt, (const uint8_t * const *)pAVframe->data, pAVframe->linesize, 0, pAVframe->height, pAVframeYUV->data, pAVframeYUV->linesize);
-                SDL_UpdateYUVTexture(pSDLTexture, &SDLRect,
-                                        pAVframeYUV->data[0], pAVframeYUV->linesize[0],
-                                        pAVframeYUV->data[1], pAVframeYUV->linesize[1],
-                                        pAVframeYUV->data[2], pAVframeYUV->linesize[2]);
-                SDL_RenderClear(pSDLRender);
-                SDL_RenderCopy(pSDLRender, pSDLTexture, NULL, &SDLRect);
-                SDL_RenderPresent(pSDLRender);
-                SDL_Delay(40);
-            }
+                    if(pAVPacket->stream_index == videoFirstIndex)
+                    {
+                        break;
+                    }
+                }
+
+                if(gManager.mPthreadStatus != PTHREAD_STATUS_EXIT)
+                {
+                    i32Ret = avcodec_decode_video2(pAVCodeCt, pAVframe, &got_picture, pAVPacket);
+                    if(i32Ret < 0)
+                    {
+                        gManager.mPthreadStatus = PTHREAD_STATUS_EXIT;
+                        break;
+                    }
+                    if(got_picture > 0)
+                    {
+                        sws_scale(pSwsCt, pAVframe->data, pAVframe->linesize, 0, pAVframe->height, pAVframeYUV->data, pAVframeYUV->linesize);
+                        SDL_UpdateYUVTexture(pSDLTexture, &SDLRect,
+                                    pAVframeYUV->data[0], pAVframeYUV->linesize[0],
+                                    pAVframeYUV->data[1], pAVframeYUV->linesize[1],
+                                    pAVframeYUV->data[2], pAVframeYUV->linesize[2]);
+                        SDL_RenderClear(pSDLRender);
+                        SDL_RenderCopy(pSDLRender, pSDLTexture, NULL, &SDLRect);
+                        SDL_RenderPresent(pSDLRender);
+                    }
+                    av_free_packet(pAVPacket);
+                }
+
+                break;
+
+            case SDL2_EVENT_EXITFREASH:
+
+                break;
+
+            case SDL_KEYDOWN:
+                switch(mEvent.key.keysym.sym)
+                {
+                    case SDLK_SPACE:
+                       if(gManager.mPthreadStatus == PTHREAD_STATUS_STOP)
+                        {
+                            gManager.mPthreadStatus = PTHREAD_STATUS_START;
+                        }
+                        else
+                        {
+                            gManager.mPthreadStatus = PTHREAD_STATUS_STOP;
+                        }
+
+                        break;
+
+                    case SDLK_F1:
+                        gManager.mPthreadStatus = PTHREAD_STATUS_STOP;
+                        break;
+
+                    case SDLK_F2:
+                        gManager.mPthreadStatus = PTHREAD_STATUS_START;
+                        break;
+                }
+
+                break;
+
+            case SDL_QUIT:
+                gManager.mPthreadStatus = PTHREAD_STATUS_EXIT;
+                break;
         }
-        av_free_packet(pAVPacket);
-    }
 
+        if(gManager.mPthreadStatus == PTHREAD_STATUS_EXIT)
+        {
+            printf("end play video\n");
+            break;
+        }
+    }
     retValue = STATUS_TRUE;
 
 exit_1:
@@ -249,7 +357,7 @@ exit_1:
 exit_2:
     av_frame_free(&pAVframe);
     av_frame_free(&pAVframeYUV);
-
+    av_free(out_buffer);
 exit_3:
     av_packet_free(&pAVPacket);
     avcodec_close(pAVCodeCt);
