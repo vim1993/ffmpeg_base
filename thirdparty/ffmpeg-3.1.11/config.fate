@@ -1,1 +1,0 @@
-config:x86:x86_64:generic:linux:gcc 5.4.0 (Ubuntu 5.4.0-6ubuntu1~16.04.10) 20160609:--enable-memalign-hack --enable-static --enable-gpl --enable-libx264 --extra-cflags=-I/usr/local/include --extra-ldflags=-L/usr/local/lib --enable-ffplay
